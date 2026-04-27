@@ -83,10 +83,10 @@ ScheduleDialog::ScheduleDialog(const QList<Room>& rooms, QWidget* parent)
         }
         QPushButton#primaryBtn:hover { background: #6080ee; }
         QPushButton#cancelBtn {
-            background: #1e1e2e; color: #9ca3af; border: 1.5px solid #2d2d45;
-            border-radius: 8px; padding: 10px 20px;
+            background: #2d2d45; color: #e0e0f0; border: 1.5px solid #6b7280;
+            border-radius: 8px; padding: 10px 20px; font-weight: 600;
         }
-        QPushButton#cancelBtn:hover { background: #2d2d45; }
+        QPushButton#cancelBtn:hover { background: #3d3d55; border-color: #9ca3af; }
     )");
 }
 
