@@ -33,23 +33,20 @@ DashboardWindow::DashboardWindow(const House& house, QWidget* parent)
         m_connectionDot->setStyleSheet("color: #f87171;");
     }
 
-    // Schedule checker — runs every 30 seconds
+    // Schedule checker — every 10 seconds
     m_scheduleTimer = new QTimer(this);
     connect(m_scheduleTimer, &QTimer::timeout, this, &DashboardWindow::onScheduleTimerTick);
     m_scheduleTimer->start(10000);
-    m_scheduleTimer->setSingleShot(false);
-    QTimer::singleShot(0, this, &DashboardWindow::onScheduleTimerTick); // immediate first check
+    // ── FIX: fire immediately on login so a schedule set right at login time
+    //         doesn't have to wait 10 seconds for the first tick ──
+    QTimer::singleShot(0, this, &DashboardWindow::onScheduleTimerTick);
 
-
-    // Usage flush timer — runs every 1 minute.
-    // Flushes elapsed minutes for every currently-ON device into the DB,
-    // then resets their start time so minutes don't get double-counted.
+    // Usage flush timer — every 1 minute
     m_usageTimer = new QTimer(this);
     connect(m_usageTimer, &QTimer::timeout, this, &DashboardWindow::onUsageTimerTick);
-    m_usageTimer->start(60000); // every 1 minute
+    m_usageTimer->start(60000);
 
-    // On startup, record start times for any devices already ON in the DB
-    // (in case of re-login after a crash)
+    // Record start times for any devices already ON (handles re-login after crash)
     m_house = Database::instance().getHouse(m_house.houseNumber);
     for (const Room& r : m_house.rooms)
         for (const Device& d : r.devices)
@@ -62,21 +59,15 @@ DashboardWindow::DashboardWindow(const House& house, QWidget* parent)
     refreshSchedules();
 }
 
-// ---------------------------------------------------------------------------
-// flushUsage() — the heart of the fix.
-// For every device that is currently ON (tracked in m_deviceOnTimes),
-// calculate how many minutes have elapsed since it was turned on (or since
-// the last flush), write that to the DB, then reset the start time to NOW
-// so the next flush only counts new time.
-// Call this: (a) every minute via timer, (b) when a device is turned OFF,
-// (c) on logout.
-// ---------------------------------------------------------------------------
+// ── flushUsage ───────────────────────────────────────────────────────────────
+// For every ON device, write elapsed minutes to DB then reset the start time
+// so the next flush only counts new time. Called every minute and on turn-off.
 void DashboardWindow::flushUsage() {
     QDateTime now = QDateTime::currentDateTime();
     for (auto it = m_deviceOnTimes.begin(); it != m_deviceOnTimes.end(); ++it) {
-        int deviceId = it.key();
+        int deviceId      = it.key();
         QDateTime& startTime = it.value();
-        int elapsedMins = (int)(startTime.secsTo(now) / 60);
+        int elapsedMins   = (int)(startTime.secsTo(now) / 60);
         if (elapsedMins > 0) {
             Database::instance().recordUsage(deviceId, elapsedMins);
             startTime = now; // reset so next flush doesn't double-count
@@ -204,11 +195,9 @@ void DashboardWindow::setupUI() {
     QPushButton* deleteSchedBtn = new QPushButton("🗑  Delete Selected Schedule");
     deleteSchedBtn->setObjectName("dangerBtn");
     schedLayout->addWidget(deleteSchedBtn);
-    connect(deleteSchedBtn, &QPushButton::clicked, this, &DashboardWindow::onDeleteSchedule);
-
     rightLayout->addWidget(schedPanel);
 
-    // Activity log panel
+    // Activity Log panel
     QWidget* logPanel = new QWidget;
     logPanel->setObjectName("panel");
     QVBoxLayout* logLayout = new QVBoxLayout(logPanel);
@@ -224,8 +213,9 @@ void DashboardWindow::setupUI() {
     contentLayout->addWidget(rightPanel, 2);
     mainLayout->addLayout(contentLayout);
 
-    connect(scheduleBtn, &QPushButton::clicked, this, &DashboardWindow::openScheduleDialog);
-    connect(logoutBtn,   &QPushButton::clicked, this, &DashboardWindow::onLogout);
+    connect(scheduleBtn,    &QPushButton::clicked, this, &DashboardWindow::openScheduleDialog);
+    connect(logoutBtn,      &QPushButton::clicked, this, &DashboardWindow::onLogout);
+    connect(deleteSchedBtn, &QPushButton::clicked, this, &DashboardWindow::onDeleteSchedule);
 }
 
 void DashboardWindow::applyStyles() {
@@ -318,10 +308,8 @@ void DashboardWindow::toggleDevice(int deviceId, const QString& deviceName, cons
                                         QString("%1 turned %2").arg(deviceName).arg(newState ? "ON" : "OFF"));
 
     if (newState) {
-        // Device turned ON — record the exact start time
         m_deviceOnTimes[deviceId] = QDateTime::currentDateTime();
     } else {
-        // Device turned OFF — flush all elapsed time to DB right now, then remove it
         if (m_deviceOnTimes.contains(deviceId)) {
             int elapsedMins = (int)(m_deviceOnTimes[deviceId].secsTo(QDateTime::currentDateTime()) / 60);
             if (elapsedMins > 0)
@@ -358,7 +346,7 @@ void DashboardWindow::refreshLogs() {
     for (const ActivityLog& log : logs) {
         m_logsList->addItem(
             QString("[%1]  %2")
-                .arg(log.timestamp.toString("MM-dd hh:mm"))
+                .arg(log.timestamp.toString("yyyy-MM-dd hh:mm"))
                 .arg(log.action));
     }
 }
@@ -386,7 +374,7 @@ void DashboardWindow::refreshSchedules() {
             QString("%1 → %2 at %3")
                 .arg(s.deviceName)
                 .arg(s.turnOn ? "ON" : "OFF")
-                .arg(s.scheduledTime.toString("MM-dd hh:mm")));
+                .arg(s.scheduledTime.toString("yyyy-MM-dd hh:mm")));
         m_scheduleRowToId[row] = s.id;
         row++;
     }
@@ -409,9 +397,10 @@ void DashboardWindow::onScheduleTimerTick() {
         Database::instance().setDeviceState(s.deviceId, s.turnOn);
         Database::instance().markScheduleExecuted(s.id);
         Database::instance().addActivityLog(s.deviceId, s.deviceName,
-                                            QString("[Scheduled] %1 turned %2").arg(s.deviceName).arg(s.turnOn ? "ON" : "OFF"));
+                                            QString("[Scheduled] %1 turned %2")
+                                                .arg(s.deviceName).arg(s.turnOn ? "ON" : "OFF"));
 
-        // Keep m_deviceOnTimes in sync with scheduled toggles too
+        // Keep usage tracking in sync with scheduled toggles
         if (s.turnOn) {
             m_deviceOnTimes[s.deviceId] = QDateTime::currentDateTime();
         } else {
@@ -428,18 +417,17 @@ void DashboardWindow::onScheduleTimerTick() {
         if (m_deviceCards.contains(s.deviceId) && m_deviceCards[s.deviceId])
             m_deviceCards[s.deviceId]->setState(s.turnOn);
     }
+
     if (!pending.isEmpty()) {
         refreshLogs();
         refreshSchedules();
     }
-    // Always refresh usage after schedule tick (even if no schedule fired)
-    // so the display stays current while devices are on
+
     flushUsage();
     refreshUsage();
 }
 
 void DashboardWindow::onUsageTimerTick() {
-    // Every 60 seconds: flush elapsed time for all ON devices → DB, then update display
     flushUsage();
     refreshUsage();
 }
@@ -452,7 +440,6 @@ void DashboardWindow::openScheduleDialog() {
 }
 
 void DashboardWindow::onLogout() {
-    // Flush any remaining usage before leaving
     flushUsage();
     ArduinoController::instance().disconnectArduino();
     emit logoutRequested();
