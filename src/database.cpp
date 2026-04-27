@@ -303,6 +303,14 @@ bool Database::removeDevice(int deviceId) {
     return query.exec();
 }
 
+bool Database::renameDevice(int deviceId, const QString& newName) {
+    QSqlQuery query;
+    query.prepare("UPDATE devices SET name = ? WHERE id = ?");
+    query.addBindValue(newName);
+    query.addBindValue(deviceId);
+    return query.exec();
+}
+
 bool Database::setDeviceState(int deviceId, bool isOn) {
     QSqlQuery query;
     query.prepare("UPDATE devices SET is_on = ? WHERE id = ?");
@@ -524,9 +532,29 @@ double Database::getMonthlyUsageHours(int houseId) {
 }
 
 double Database::getEstimatedBill(int houseId) {
-    // 0.5 kWh per device-hour, PKR 50 per kWh
     double monthlyHours = getMonthlyUsageHours(houseId);
     return monthlyHours * 0.5 * 50.0;
+}
+
+QList<QPair<QString,int>> Database::getMonthlyUsageDetails(int houseId) {
+    QList<QPair<QString,int>> result;
+    QString monthAgo = QDate::currentDate().addDays(-30).toString("yyyy-MM-dd");
+    QSqlQuery query;
+    query.prepare(R"(
+        SELECT d.name, COALESCE(SUM(ur.minutes), 0)
+        FROM devices d
+        JOIN rooms r ON d.room_id = r.id
+        LEFT JOIN usage_records ur ON ur.device_id = d.id AND ur.date >= ?
+        WHERE r.house_id = ?
+        GROUP BY d.id, d.name
+        ORDER BY d.name
+    )");
+    query.addBindValue(monthAgo);
+    query.addBindValue(houseId);
+    query.exec();
+    while (query.next())
+        result.append({query.value(0).toString(), query.value(1).toInt()});
+    return result;
 }
 
 bool Database::deleteSchedule(int scheduleId) {
