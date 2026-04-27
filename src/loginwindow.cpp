@@ -13,6 +13,7 @@
 #include <QFont>
 #include <QDialog>
 #include <QListWidget>
+#include <QCryptographicHash>
 
 static const int MAX_ATTEMPTS = 3;
 
@@ -148,12 +149,12 @@ void LoginWindow::setupUI() {
     bottomLayout->addWidget(m_viewHousesBtn);
     mainLayout->addLayout(bottomLayout);
 
-    connect(m_loginBtn,      &QPushButton::clicked, this, &LoginWindow::onLogin);
-    connect(m_registerBtn,   &QPushButton::clicked, this, &LoginWindow::onRegister);
-    connect(m_editHouseBtn,  &QPushButton::clicked, this, &LoginWindow::onEditHouse);
-    connect(m_viewHousesBtn, &QPushButton::clicked, this, &LoginWindow::onViewHouses);
-    connect(m_themeBtn,      &QPushButton::clicked, this, &LoginWindow::onToggleTheme);
-    connect(m_passwordEdit,  &QLineEdit::returnPressed, this, &LoginWindow::onLogin);
+    connect(m_loginBtn,        &QPushButton::clicked, this, &LoginWindow::onLogin);
+    connect(m_registerBtn,     &QPushButton::clicked, this, &LoginWindow::onRegister);
+    connect(m_editHouseBtn,    &QPushButton::clicked, this, &LoginWindow::onEditHouse);
+    connect(m_viewHousesBtn,   &QPushButton::clicked, this, &LoginWindow::onViewHouses);
+    connect(m_themeBtn,        &QPushButton::clicked, this, &LoginWindow::onToggleTheme);
+    connect(m_passwordEdit,    &QLineEdit::returnPressed, this, &LoginWindow::onLogin);
     connect(m_houseNumberEdit, &QLineEdit::returnPressed,
             m_passwordEdit, QOverload<>::of(&QWidget::setFocus));
 }
@@ -201,8 +202,8 @@ void LoginWindow::applyLightTheme() {
     setStyleSheet(R"(
         QWidget { background-color: #f0f4ff; color: #1e1e2e; font-family: 'Segoe UI', sans-serif; }
         QLabel#title { font-size: 14px; font-weight: bold; color: #3b6be8; letter-spacing: 0.5px; }
-        QLabel#subtitle { font-size: 12px; color: #555577; }
-        QLabel#fieldLabel { font-size: 13px; font-weight: 600; color: #2d2d45; }
+        QLabel#subtitle { font-size: 12px; color: #5566aa; }
+        QLabel#fieldLabel { font-size: 13px; font-weight: 600; color: #1e1e2e; }
         QLabel#statusLabel { font-size: 12px; color: #dc2626; }
         QLineEdit#inputField {
             background-color: #ffffff; border: 1.5px solid #c0c8e0;
@@ -235,7 +236,7 @@ void LoginWindow::onToggleTheme() {
     else            applyDarkTheme();
 }
 
-// ── LOGIN (with lockout) ──────────────────────────────────────────────────────
+// ── LOGIN ────────────────────────────────────────────────────────────────────
 
 void LoginWindow::onLogin() {
     QString houseNum = m_houseNumberEdit->text().trimmed();
@@ -246,25 +247,21 @@ void LoginWindow::onLogin() {
         return;
     }
 
-    if (!Database::instance().houseExists(houseNum)) {
-        m_statusLabel->setText("House number not found.");
-        return;
-    }
+    // Check if house exists — but do NOT reveal this to the user in error messages
+    bool exists = Database::instance().houseExists(houseNum);
 
-    // Check if account is locked
-    if (Database::instance().isAccountLocked(houseNum)) {
+    // Check lockout only if house exists
+    if (exists && Database::instance().isAccountLocked(houseNum)) {
         QDateTime expiry = Database::instance().getLockoutExpiry(houseNum);
-        qint64 secondsLeft = QDateTime::currentDateTime().secsTo(expiry);
-        int minutesLeft = (int)(secondsLeft / 60) + 1;
+        int minutesLeft = (int)(QDateTime::currentDateTime().secsTo(expiry) / 60) + 1;
         m_statusLabel->setText(
-            QString("Account locked. Try again in %1 minute(s).")
-                .arg(minutesLeft)
-            );
+            QString("Account locked. Try again in %1 minute(s).").arg(minutesLeft));
         m_passwordEdit->clear();
         return;
     }
 
     if (Database::instance().validateLogin(houseNum, password)) {
+        // Successful login
         Database::instance().resetFailedAttempts(houseNum);
         House house = Database::instance().getHouse(houseNum);
         DashboardWindow* dashboard = new DashboardWindow(house);
@@ -277,17 +274,22 @@ void LoginWindow::onLogin() {
             this->show();
         });
     } else {
-        Database::instance().recordFailedAttempt(houseNum);
-        int attempts = Database::instance().getFailedAttempts(houseNum);
-        int remaining = 3 - attempts;
-
-        if (Database::instance().isAccountLocked(houseNum)) {
-            m_statusLabel->setText("Account locked for 2 hours after 3 failed attempts.");
+        // Only record failed attempt if house actually exists
+        // This prevents anyone from locking others' accounts by guessing house numbers
+        if (exists) {
+            Database::instance().recordFailedAttempt(houseNum);
+            int attempts = Database::instance().getFailedAttempts(houseNum);
+            int remaining = MAX_ATTEMPTS - attempts;
+            if (Database::instance().isAccountLocked(houseNum)) {
+                m_statusLabel->setText("Account locked for 2 hours after 3 failed attempts.");
+            } else {
+                m_statusLabel->setText(
+                    QString("Invalid credentials. %1 attempt(s) remaining before lockout.")
+                        .arg(remaining));
+            }
         } else {
-            m_statusLabel->setText(
-                QString("Wrong password. %1 attempt(s) remaining before lockout.")
-                    .arg(remaining)
-                );
+            // House doesn't exist — give same generic message, no lockout recorded
+            m_statusLabel->setText("Invalid house number or password.");
         }
         m_passwordEdit->clear();
     }
@@ -300,7 +302,7 @@ void LoginWindow::onRegister() {
     regWin->exec();
 }
 
-// ── EDIT HOUSE (includes Change Password) ────────────────────────────────────
+// ── EDIT HOUSE ───────────────────────────────────────────────────────────────
 
 void LoginWindow::onEditHouse() {
     QString houseNum = m_houseNumberEdit->text().trimmed();
@@ -308,19 +310,16 @@ void LoginWindow::onEditHouse() {
         m_statusLabel->setText("Enter house number to edit.");
         return;
     }
-    if (!Database::instance().houseExists(houseNum)) {
-        m_statusLabel->setText("House not found. Please register first.");
-        return;
-    }
 
     bool ok;
     QString pass = QInputDialog::getText(this, "Authentication",
-                                         "Enter current password for " + houseNum + ":",
+                                         "Enter password:",
                                          QLineEdit::Password, "", &ok);
     if (!ok || pass.isEmpty()) return;
 
+    // Use same generic message whether house doesn't exist or password is wrong
     if (!Database::instance().validateLogin(houseNum, pass)) {
-        m_statusLabel->setText("Incorrect password.");
+        m_statusLabel->setText("Invalid house number or password.");
         return;
     }
 
@@ -355,9 +354,26 @@ void LoginWindow::onEditHouse() {
     }
 }
 
-// ── VIEW HOUSES ───────────────────────────────────────────────────────────────
+// ── VIEW HOUSES (protected by master password) ────────────────────────────────
 
 void LoginWindow::onViewHouses() {
+    bool ok;
+    QString masterPass = QInputDialog::getText(this, "View Houses",
+                                               "Enter master password to view registered houses:",
+                                               QLineEdit::Password, "", &ok);
+    if (!ok || masterPass.isEmpty()) return;
+
+    // Master password: "admin1234" — change this string to whatever you want
+    QString hashedInput  = QString(QCryptographicHash::hash(
+                                      masterPass.toUtf8(), QCryptographicHash::Sha256).toHex());
+    QString hashedMaster = QString(QCryptographicHash::hash(
+                                       QString("admin1234").toUtf8(), QCryptographicHash::Sha256).toHex());
+
+    if (hashedInput != hashedMaster) {
+        m_statusLabel->setText("Incorrect master password.");
+        return;
+    }
+
     QStringList houses = Database::instance().getAllHouseNumbers();
 
     QDialog* dlg = new QDialog(this);
@@ -385,9 +401,9 @@ void LoginWindow::onViewHouses() {
     layout->setContentsMargins(24, 24, 24, 24);
     layout->setSpacing(14);
 
-    QLabel* title = new QLabel("Registered Houses");
-    title->setAlignment(Qt::AlignCenter);
-    layout->addWidget(title);
+    QLabel* titleLbl = new QLabel("Registered Houses");
+    titleLbl->setAlignment(Qt::AlignCenter);
+    layout->addWidget(titleLbl);
 
     QListWidget* list = new QListWidget;
     if (houses.isEmpty()) {
