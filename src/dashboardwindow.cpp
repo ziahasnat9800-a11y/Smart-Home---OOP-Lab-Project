@@ -10,6 +10,11 @@
 #include <QMessageBox>
 #include <QApplication>
 #include <QScreen>
+#include <QInputDialog>
+#include <QFileDialog>
+#include <QTextStream>
+#include <QFile>
+#include <QDate>
 
 DashboardWindow::DashboardWindow(const House& house, QWidget* parent)
     : QWidget(parent), m_house(house) {
@@ -89,6 +94,13 @@ void DashboardWindow::setupUI() {
     QLabel* titleLabel = new QLabel("🏠  Smart Home — " + m_house.houseNumber);
     titleLabel->setObjectName("topTitle");
     topLayout->addWidget(titleLabel);
+    topLayout->addSpacing(16);
+
+    // Devices ON count badge
+    m_devicesOnLabel = new QLabel("0 devices ON");
+    m_devicesOnLabel->setObjectName("devicesOnLabel");
+    topLayout->addWidget(m_devicesOnLabel);
+
     topLayout->addStretch();
 
     m_connectionDot = new QLabel("●");
@@ -101,9 +113,19 @@ void DashboardWindow::setupUI() {
 
     QPushButton* scheduleBtn = new QPushButton("⏰  Schedule");
     scheduleBtn->setObjectName("headerBtn");
+    QPushButton* renameBtn = new QPushButton("✏  Rename Device");
+    renameBtn->setObjectName("headerBtn");
+    QPushButton* exportBtn = new QPushButton("📥  Export CSV");
+    exportBtn->setObjectName("headerBtn");
+    QPushButton* aboutBtn = new QPushButton("ℹ  About");
+    aboutBtn->setObjectName("headerBtn");
     QPushButton* logoutBtn = new QPushButton("Logout");
     logoutBtn->setObjectName("logoutBtn");
+
     topLayout->addWidget(scheduleBtn);
+    topLayout->addWidget(renameBtn);
+    topLayout->addWidget(exportBtn);
+    topLayout->addWidget(aboutBtn);
     topLayout->addWidget(logoutBtn);
     mainLayout->addWidget(topBar);
 
@@ -216,6 +238,9 @@ void DashboardWindow::setupUI() {
     connect(scheduleBtn,    &QPushButton::clicked, this, &DashboardWindow::openScheduleDialog);
     connect(logoutBtn,      &QPushButton::clicked, this, &DashboardWindow::onLogout);
     connect(deleteSchedBtn, &QPushButton::clicked, this, &DashboardWindow::onDeleteSchedule);
+    connect(renameBtn,      &QPushButton::clicked, this, &DashboardWindow::onRenameDevice);
+    connect(exportBtn,      &QPushButton::clicked, this, &DashboardWindow::onExportCSV);
+    connect(aboutBtn,       &QPushButton::clicked, this, &DashboardWindow::onAbout);
 }
 
 void DashboardWindow::applyStyles() {
@@ -223,6 +248,10 @@ void DashboardWindow::applyStyles() {
         QWidget { background-color: #0f0f1a; color: #e0e0f0; font-family: 'Segoe UI', sans-serif; }
         QWidget#topBar { background-color: #131325; border-bottom: 1px solid #2d2d45; }
         QLabel#topTitle { font-size: 16px; font-weight: bold; color: #7c9fff; }
+        QLabel#devicesOnLabel {
+            font-size: 12px; font-weight: bold; color: #0f0f1a;
+            background: #4ade80; border-radius: 10px; padding: 2px 10px;
+        }
         QWidget#panel { background: #131325; border: 1px solid #2d2d45; border-radius: 12px; }
         QLabel#panelTitle { font-size: 14px; font-weight: bold; color: #7c9fff; margin-bottom: 6px; }
         QScrollArea#scrollArea { border: none; background: transparent; }
@@ -253,25 +282,27 @@ void DashboardWindow::applyStyles() {
 }
 
 void DashboardWindow::buildDeviceCards() {
+    // Disconnect all existing cards
     for (auto* card : m_deviceCards)
         if (card) card->disconnect();
     m_deviceCards.clear();
 
-    while (m_devicesLayout->count() > 0) {
-        QLayoutItem* item = m_devicesLayout->takeAt(0);
-        if (!item) break;
-        if (QWidget* w = item->widget()) { w->hide(); w->deleteLater(); }
-        else if (QLayout* sub = item->layout()) {
-            while (sub->count() > 0) {
-                QLayoutItem* child = sub->takeAt(0);
-                if (!child) break;
-                if (QWidget* cw = child->widget()) { cw->hide(); cw->deleteLater(); }
-                delete child;
-            }
-            delete sub;
+    // Safely delete all children of the container
+    // by hiding them and scheduling deleteLater — never delete layouts manually
+    const QList<QObject*> children = m_devicesContainer->children();
+    for (QObject* child : children) {
+        if (QWidget* w = qobject_cast<QWidget*>(child)) {
+            w->hide();
+            w->setParent(nullptr);
+            w->deleteLater();
         }
-        delete item;
     }
+
+    // Recreate the layout on the same container
+    delete m_devicesContainer->layout();
+    m_devicesLayout = new QVBoxLayout(m_devicesContainer);
+    m_devicesLayout->setContentsMargins(0, 0, 0, 0);
+    m_devicesLayout->setSpacing(12);
 
     m_house = Database::instance().getHouse(m_house.houseNumber);
 
@@ -361,6 +392,18 @@ void DashboardWindow::refreshUsage() {
     m_weeklyLabel->setText(QString("%1 hrs").arg(weekly,  0, 'f', 2));
     m_monthlyLabel->setText(QString("%1 hrs").arg(monthly, 0, 'f', 2));
     m_billLabel->setText(QString("Estimated Bill: PKR %1").arg(bill, 0, 'f', 0));
+
+    // Update devices ON badge
+    int onCount = 0;
+    m_house = Database::instance().getHouse(m_house.houseNumber);
+    for (const Room& r : m_house.rooms)
+        for (const Device& d : r.devices)
+            if (d.isOn) onCount++;
+    m_devicesOnLabel->setText(QString("%1 device%2 ON")
+                                  .arg(onCount).arg(onCount == 1 ? "" : "s"));
+    m_devicesOnLabel->setStyleSheet(onCount > 0
+                                        ? "font-size:12px;font-weight:bold;color:#0f0f1a;background:#4ade80;border-radius:10px;padding:2px 10px;"
+                                        : "font-size:12px;font-weight:bold;color:#9ca3af;background:#2d2d45;border-radius:10px;padding:2px 10px;");
 }
 
 void DashboardWindow::refreshSchedules() {
@@ -443,4 +486,119 @@ void DashboardWindow::onLogout() {
     flushUsage();
     ArduinoController::instance().disconnectArduino();
     emit logoutRequested();
+}
+
+// ── RENAME DEVICE ─────────────────────────────────────────────────────────────
+void DashboardWindow::onRenameDevice() {
+    // Build list of all devices
+    m_house = Database::instance().getHouse(m_house.houseNumber);
+    QStringList deviceNames;
+    QList<int> deviceIds;
+    for (const Room& r : m_house.rooms)
+        for (const Device& d : r.devices) {
+            deviceNames << QString("%1 — %2").arg(r.name).arg(d.name);
+            deviceIds << d.id;
+        }
+
+    if (deviceNames.isEmpty()) {
+        QMessageBox::information(this, "No Devices", "No devices found.");
+        return;
+    }
+
+    bool ok;
+    QString selected = QInputDialog::getItem(this, "Rename Device",
+                                             "Select device to rename:", deviceNames, 0, false, &ok);
+    if (!ok) return;
+
+    int idx = deviceNames.indexOf(selected);
+    int deviceId = deviceIds[idx];
+
+    QString newName = QInputDialog::getText(this, "Rename Device",
+                                            "Enter new name:", QLineEdit::Normal, "", &ok);
+    if (!ok || newName.trimmed().isEmpty()) return;
+
+    if (Database::instance().renameDevice(deviceId, newName.trimmed())) {
+        QMessageBox::information(this, "Renamed",
+                                 QString("Device renamed to \"%1\" successfully.").arg(newName.trimmed()));
+        // Defer rebuild to next event loop tick to avoid crash from
+        // deleting widgets while Qt is still processing dialog close events
+        QTimer::singleShot(0, this, [this]() {
+            buildDeviceCards();
+            refreshSchedules();
+            refreshUsage();
+        });
+    } else {
+        QMessageBox::warning(this, "Error", "Failed to rename device.");
+    }
+}
+
+// ── EXPORT CSV ────────────────────────────────────────────────────────────────
+void DashboardWindow::onExportCSV() {
+    QString path = QFileDialog::getSaveFileName(this, "Export Usage Report",
+                                                QString("SmartHome_Report_%1.csv")
+                                                    .arg(QDate::currentDate().toString("yyyy-MM")),
+                                                "CSV Files (*.csv)");
+    if (path.isEmpty()) return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, "Error", "Could not open file for writing.");
+        return;
+    }
+
+    QTextStream out(&file);
+
+    // Header
+    out << "Smart Home Electricity Usage Report\n";
+    out << "House Number:," << m_house.houseNumber << "\n";
+    out << "Report Period:,Last 30 Days\n";
+    out << "Generated:," << QDateTime::currentDateTime().toString("yyyy-MM-dd hh:mm") << "\n\n";
+
+    out << "Device Name,Usage (minutes),Usage (hours),Est. Cost (PKR)\n";
+
+    auto details = Database::instance().getMonthlyUsageDetails(m_house.id);
+    int totalMins = 0;
+    for (const auto& pair : details) {
+        double hours = pair.second / 60.0;
+        double cost  = hours * 0.5 * 50.0;
+        out << pair.first << ","
+            << pair.second << ","
+            << QString::number(hours, 'f', 2) << ","
+            << QString::number(cost,  'f', 0) << "\n";
+        totalMins += pair.second;
+    }
+
+    double totalHours = totalMins / 60.0;
+    double totalCost  = totalHours * 0.5 * 50.0;
+    out << "\nTOTAL," << totalMins << ","
+        << QString::number(totalHours, 'f', 2) << ","
+        << QString::number(totalCost,  'f', 0) << "\n";
+
+    file.close();
+    QMessageBox::information(this, "Exported",
+                             QString("Report saved to:\n%1").arg(path));
+}
+
+// ── ABOUT ─────────────────────────────────────────────────────────────────────
+void DashboardWindow::onAbout() {
+    QMessageBox about(this);
+    about.setWindowTitle("About");
+    about.setTextFormat(Qt::RichText);
+    about.setText(R"(
+        <div style='font-family: Segoe UI; text-align: center;'>
+            <h2 style='color: #7c9fff;'>🏠 Smart Home</h2>
+            <p style='color: #9ca3af;'>Electricity Control & Monitoring System</p>
+            <hr>
+            <p><b>Version:</b> 1.0.0</p>
+            <p><b>Project:</b> OOP Lab Project</p>
+            <p><b>Name:</b> Your Name</p>
+            <p><b>Roll No:</b> Your Roll Number</p>
+            <p><b>Built with:</b> Qt6 · C++17 · SQLite</p>
+        </div>
+    )");
+    about.setStyleSheet("QMessageBox { background-color: #0f0f1a; color: #e0e0f0; }"
+                        "QLabel { color: #e0e0f0; min-width: 280px; }"
+                        "QPushButton { background: #7c9fff; color: #0f0f1a; border: none;"
+                        "border-radius: 6px; padding: 6px 20px; font-weight: bold; }");
+    about.exec();
 }
