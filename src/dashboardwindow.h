@@ -6,6 +6,7 @@
 #include <QTimer>
 #include <QMap>
 #include <QDateTime>
+#include <QStringList>
 #include "database.h"
 
 class DeviceCard;
@@ -24,7 +25,10 @@ private slots:
     void onUsageTimerTick();
     void openScheduleDialog();
     void onLogout();
-    void onDeleteSchedule();        // ← must be here
+    void onDeleteSchedule();
+    void onRenameDevice();
+    void onExportCSV();
+    void onAbout();        // ← must be here
 
 private:
     void setupUI();
@@ -48,6 +52,7 @@ private:
     QLabel* m_billLabel;
     QLabel* m_arduinoStatusLabel;
     QLabel* m_connectionDot;
+    QLabel* m_devicesOnLabel;   // shows "X devices currently ON"
 
     QTimer* m_scheduleTimer;
     QTimer* m_usageTimer;
