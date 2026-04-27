@@ -3,6 +3,7 @@
 #include <QList>
 #include <QDateTime>
 #include <QMap>
+#include <QPair>
 
 struct Device {
     int id;
@@ -71,6 +72,7 @@ public:
     // Device operations
     bool addDevice(int roomId, const QString& name, const QString& type);
     bool removeDevice(int deviceId);
+    bool renameDevice(int deviceId, const QString& newName);
     bool setDeviceState(int deviceId, bool isOn);
     QList<Device> getDevices(int roomId);
     Device getDevice(int deviceId);
@@ -92,6 +94,9 @@ public:
     double getWeeklyUsageHours(int houseId);
     double getMonthlyUsageHours(int houseId);
     double getEstimatedBill(int houseId);
+
+    // Returns per-device usage for CSV export: device name → total minutes this month
+    QList<QPair<QString,int>> getMonthlyUsageDetails(int houseId);
 
 private:
     Database() = default;
